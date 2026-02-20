@@ -1,0 +1,601 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <CircularBuffer.hpp>
+
+// Function Headers:
+void Motor_Control_2(void);
+void Object_Detect_A(void);
+void Object_Detect_B(void);
+void Battery_Level(void);
+void Motor_Current_A(void);
+void Motor_Current_B(void);
+void receiveUDPData(void);
+void sendUDPData(void);
+void sendUDP_PhoneData(void);
+void updateCurrentMeasurement_A(void);
+
+const char* ssid = "Wanangwa";
+const char* password = "17381234";
+const char* udpAddress = "192.168.137.100";    // user esp32 destination ip
+const char* phoneAddress = "192.168.137.203";  // robot phone destination ip
+
+WiFiUDP udp;
+unsigned int udpPort = 1234;  // local port to listen on
+char incomingPacket[255];     // buffer for incoming packets
+int packetSize = 0;
+int len = 0;
+String latency_received = "";
+
+IPAddress staticIP(192, 168, 137, 150);  // ESP32 static IP
+IPAddress gateway(192, 168, 1, 1);       // IP Address of your network gateway (router)
+IPAddress subnet(255, 255, 255, 0);      // Subnet mask
+IPAddress primaryDNS(192, 168, 1, 1);    // Primary DNS (optional)
+IPAddress secondaryDNS(0, 0, 0, 0);      // Secondary DNS (optional)
+
+// ========================================================= Motor Variables ===================================================================
+
+// Motor A pins:
+int MotorA_ENA = 32;
+int MotorA_IN1 = 33;
+int MotorA_IN2 = 25;
+
+// Motor B pins:
+int MotorB_ENB = 14;
+int MotorB_IN3 = 26;
+int MotorB_IN4 = 27;
+
+// PWM Setup:
+int PWM_Channel_A = 1;
+int PWM_Channel_B = 2;
+int PWM_Resolution = 8;
+int PWM_Frequency = 5000;
+
+// Motor Speeds
+int MotorA_Speed = 0;
+int MotorB_Speed = 0;
+int xValue_int = 0;
+int yValue_int = 0;
+int Motor_Speed_int = 0;
+int Motor_Speed_mapped;
+int Motor_Speed_mapped_B;
+String Motor_Direction = "";
+String Motor_Speed = "";
+int n = 2;
+int speed = 0;
+int switchState = 0;
+unsigned long lastCheckTime = 0;           // Last time the distance was checked
+unsigned long consistentDistanceTime = 0;  // Time for which the distance has been consistent
+unsigned long debounceDelay = 25;          // Debounce delay in milliseconds
+int lastDistance = 0;                      // Track the last distance to detect changes
+int original_speed = 0;
+unsigned long turnStartTime = 0;  // Variable to store the time the turn starts
+bool isTurning = false;           // Flag to indicate if a turn is in progress
+
+// ========================================================= Ultrasonic Sensor Variables ===================================================================
+
+#define trigPin_A 17
+#define echoPin_A 5
+
+#define trigPin_B 19
+#define echoPin_B 18
+
+float Speed = 0.034;
+
+long Duration_A = 0;
+long duration_A = 0;
+int Distance_A = 0;
+int distance_A = 0;
+int prev_Distance_A = 0;
+const int numReadings_A = 10;  // Number of samples to average
+long totalDuration_A = 0;      // To store the sum of durations
+long totalDistance_A = 0;      // To store the sum of distances
+
+long Duration_B = 0;
+long duration_B = 0;
+int Distance_B = 0;
+int distance_B = 0;
+int prev_Distance_B = 0;
+const int numReadings_B = 10;  // Number of samples to average
+long totalDuration_B = 0;      // To store the sum of durations
+long totalDistance_B = 0;      // To store the sum of distances
+
+// ========================================================= Motor Current Monitoring Variables ===================================================================
+
+// Motor A
+#define ADC_Pin_Motor_A 39
+int adcValue_Motor_A;
+int current_A = 0;
+int prev_current_A = 0;
+int senseResistor_A = 3.3;
+const int numSamples_Motor_A = 200;         // Number of samples for averaging
+int adcValues_Motor_A[numSamples_Motor_A];  // Array to store ADC values
+int totalAdcValue_Motor_A = 0;
+float averageAdcValue_Motor_A = 0;
+float averageVoltage_Motor_A = 0;
+float averageVoltage_Motor_A_Actual = 0;
+float m_A = 0.8807;
+float c_A = -55.0102;
+
+#define BUFFER_SIZE_A 20
+#define OVERSAMPLE_FACTOR 2
+#define SAMPLE_INTERVAL_A 1  // 1ms between samples
+
+typedef CircularBuffer<int, BUFFER_SIZE_A> ADCBufferType;
+ADCBufferType adcBuffer_A;
+
+unsigned long lastSampleTime_A = 0;
+float Voltage_Measured_A = 0;
+float Current_Measured_A = 0;
+float Voltage_Measured_A_Actual = 0;
+
+// Motor B
+#define ADC_Pin_Motor_B 34
+int adcValue_Motor_B = 0;
+int current_B = 0;
+int prev_current_B = 0;
+int senseResistor_B = 3.5;
+const int numSamples_Motor_B = 200;         // Number of samples for averaging
+int adcValues_Motor_B[numSamples_Motor_B];  // Array to store ADC values
+int totalAdcValue_Motor_B = 0;
+float averageAdcValue_Motor_B = 0;
+float averageVoltage_Motor_B = 0;
+float averageVoltage_Motor_B_Actual = 0;
+float m_B = 0.8697;
+float c_B = -66.9965;
+
+// ========================================================= Battery Level Monitoring Variables ===================================================================
+
+// LUT for the Discharge Curve
+float Discharge_Curve[] = {
+  5.5845401475666972, 2579.999999999999,
+  5.8909128631577625, 2519.9999999999955,
+  6.093397374693314, 2460.0,
+  6.228404238501086, 2400.0,
+  6.358547204733114, 2339.9999999999955,
+  6.4827800883712854, 2280.0,
+  6.603163973091386, 2219.9999999999955,
+  6.705782610358694, 2159.9999999999955,
+  6.792536671445182, 2100.0,
+  6.855266748461503, 2040.0,
+  6.9981033717915172, 1980.0000000000005,
+  6.940305712466016, 1919.9999999999995,
+  6.9771323862940556, 1859.9999999999995,
+  7.028364526173304, 1799.9999999999995,
+  7.059701750262862, 1739.9999999999995,
+  7.094201333189573, 1679.9999999999995,
+  7.121929870590815, 1619.9999999999995,
+  7.153489034319566, 1560.0,
+  7.182395217367992, 1500.0,
+  7.216056432882249, 1439.9999999999995,
+  7.2556637690575, 1379.9999999999995,
+  7.291844156786385, 1319.9999999999995,
+  7.325360927051198, 1259.9999999999995,
+  7.373381952689952, 1199.9999999999995,
+  7.4228331062220282, 1140.0,
+  7.466828856999833, 1079.9999999999995,
+  7.5270171510629105, 1020.0,
+  7.585681057673708, 959.9999999999995,
+  7.59730316995594, 899.9999999999995,
+  7.642421677421892, 839.9999999999995,
+  7.684181629245712, 779.9999999999995,
+  7.721978055177991, 719.9999999999995,
+  7.7730071921981809, 659.9999999999995,
+  7.820250147467505, 599.9999999999995,
+  7.8668275856998332, 539.9999999999995,
+  7.915681057673708, 479.9999999999998,
+  7.959573159973509, 419.9999999999998,
+  8.0427974071605292, 359.9999999999998,
+  8.084181629245716, 299.9999999999998,
+  8.14451604388201, 239.9999999999998,
+  8.1915986854092, 179.99999999999989,
+  8.205068042455082, 119.99999999999989,
+  8.095229793471229, 59.999999999999886,
+  8.307978911905941, 0.0
+};
+
+// Measured voltage:
+float SoC;
+int Battery_Percentage = 0;
+int prev_Battery_Percentage = 0;
+const int numSamples_Battery = 100;         // Number of samples for averaging
+int adcValues_Battery[numSamples_Battery];  // Array to store ADC values
+int totalAdcValue_Battery;
+float averageAdcValue_Battery = 0;
+float V_Measured_Battery = 0;
+float V_Actual_Battery = 0;
+float c = -0.3122;
+float m = 0.7986;
+unsigned long currentMillis_Battery = 0;
+unsigned long previousMillis_Battery = 0;
+bool firstRun = true;
+int interval_Battery = 10000;
+
+const int BUFFER_SIZE = 100;
+CircularBuffer<int, BUFFER_SIZE> adcBuffer;
+
+unsigned long lastSampleTime = 0;
+const unsigned long SAMPLE_INTERVAL = 100;  // 1 second between samples
+
+// ADC Configuration
+#define ADC_PIN_Battery 36  // Define the ADC0 pin
+float R1 = 2670;            // top resistor value
+float R2 = 970;             // bottom resistor value
+
+void setup() {
+  // ========================================= Serial Comms Setup =============================================
+  Serial.begin(115200);
+  Serial.println("Serial communication started.");
+
+  // ========================================= Wifi Setup =============================================
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(1000);
+    Serial.println("Connecting to WiFi...");
+  }
+
+  // Configuring static IP
+  if (!WiFi.config(staticIP, gateway, subnet, primaryDNS, secondaryDNS)) {
+    Serial.println("Failed to configure Static IP");
+  } else {
+    Serial.println("Static IP configured!");
+  }
+
+  Serial.println("Connected to WiFi");
+  Serial.print("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  // Begin UDP
+  udp.begin(udpPort);
+  Serial.printf("Now listening at IP %s, UDP port %d\n", WiFi.localIP().toString().c_str(), udpPort);
+
+  // ========================================= Motor Setup ==================================================
+  pinMode(MotorA_ENA, OUTPUT);
+  pinMode(MotorB_ENB, OUTPUT);
+
+  pinMode(MotorA_IN1, OUTPUT);
+  pinMode(MotorA_IN2, OUTPUT);
+  pinMode(MotorB_IN3, OUTPUT);
+  pinMode(MotorB_IN4, OUTPUT);
+
+  // ========================================= Ultrasonic Sensor Setup ========================================
+  pinMode(trigPin_A, OUTPUT);
+  pinMode(echoPin_A, INPUT);
+
+  pinMode(trigPin_B, OUTPUT);
+  pinMode(echoPin_B, INPUT);
+
+  // ========================================= ADC Setup ========================================
+  analogReadResolution(12);  // Set ADC resolution to 12-bit (0-4095)
+}
+
+void loop() {
+  Object_Detect_A();
+  Object_Detect_B();
+
+  Motor_Current_A();
+  Motor_Current_B();
+
+  updateBatteryLevel();
+
+  if (prev_Distance_A != Distance_A || prev_Distance_B != Distance_B ||
+      prev_Battery_Percentage != Battery_Percentage ||
+      prev_current_A != current_A || prev_current_B != current_B) {
+
+    sendUDPData();
+
+    prev_Distance_A = Distance_A;
+    prev_Distance_B = Distance_B;
+    prev_Battery_Percentage = Battery_Percentage;
+    prev_current_A = current_A;
+    prev_current_B = current_B;
+  }
+
+  receiveUDPData();
+  Motor_Control_2();
+  sendUDP_PhoneData();
+}
+
+// ================================================================ Wifi Send/Receive Functions =================================================================================
+
+void receiveUDPData(void) {
+  packetSize = udp.parsePacket();  // listens for a packet in UDP comms line and returns its size
+  if (packetSize) {                // if a packet has been received
+    // Receive incoming UDP packet
+    len = udp.read(incomingPacket, 255);  // read packet into array of size 255
+    if (len > 0) {
+      incomingPacket[len] = 0;  // Null-terminate received data (required for printf/string parsing)
+    }
+
+    // Parse the received data
+    String receivedData = String(incomingPacket);
+
+    Motor_Direction = receivedData.substring(0, receivedData.indexOf(','));  // Extract before first comma
+    int firstComma = receivedData.indexOf(',');                              // Find first comma
+    int secondComma = receivedData.indexOf(',', firstComma + 1);             // Find second comma
+    speed = receivedData.substring(firstComma + 1, secondComma).toInt();     // Extract speed
+    switchState = receivedData.substring(secondComma + 1).toInt();           // Extract switch state
+
+    // Print parsed data
+    Serial.print("Motor Direction: ");
+    Serial.println(Motor_Direction);
+    Serial.print("Speed: ");
+    Serial.println(speed);
+    Serial.print("Switch State: ");
+    Serial.println(switchState);
+  }
+}
+
+void sendUDPData(void) {
+  String data_to_send = String(Distance_A) + "," + String(Distance_B) + "," +
+                        String(Battery_Percentage) + "," + String(current_A) + "," +
+                        String(current_B);
+
+  udp.beginPacket(udpAddress, udpPort);
+  udp.write((const uint8_t*)data_to_send.c_str(), data_to_send.length());  // Cast to uint8_t* for udp.write
+  udp.endPacket();
+}
+
+void sendUDP_PhoneData(void) {
+  String Phone_Data = String(Battery_Percentage) + "," + String(current_A) + "," + String(current_B);
+
+  udp.beginPacket(phoneAddress, udpPort);
+  udp.write((const uint8_t*)Phone_Data.c_str(), Phone_Data.length());
+  udp.endPacket();
+}
+
+// ================================================================ Motor Function =================================================================================
+
+void Motor_Control_2(void) {  // latest version
+
+  if (Motor_Direction == "S") {
+    // Set motors to stop
+    digitalWrite(MotorA_IN1, LOW);
+    digitalWrite(MotorA_IN2, LOW);
+    digitalWrite(MotorB_IN3, LOW);
+    digitalWrite(MotorB_IN4, LOW);
+  }
+
+  if (Motor_Direction == "F") {
+    // Set motors to move forward
+    digitalWrite(MotorA_IN1, LOW);
+    digitalWrite(MotorA_IN2, HIGH);
+    digitalWrite(MotorB_IN3, LOW);
+    digitalWrite(MotorB_IN4, HIGH);
+
+    // Check distance_A and adjust speed accordingly
+    if (Distance_A < 35) {
+      // Stop if too close
+      digitalWrite(MotorA_IN1, LOW);
+      digitalWrite(MotorA_IN2, LOW);
+      digitalWrite(MotorB_IN3, LOW);
+      digitalWrite(MotorB_IN4, LOW);
+    } else if (Distance_A >= 35 && Distance_A <= 65) {
+      // Reduce speed when in the caution zone
+      Motor_Speed_mapped = map(50, 0, 100, 120, 255);
+      Motor_Speed_mapped_B = map(50, 0, 100, 120, 220);
+    } else if (Distance_B > 65) {
+      // Use normal speed mapping
+      Motor_Speed_mapped = map(speed, 0, 100, 120, 255);
+      Motor_Speed_mapped_B = map(speed, 0, 100, 120, 220);
+    }
+
+    // Set motor speeds
+    analogWrite(MotorA_ENA, Motor_Speed_mapped);
+    analogWrite(MotorB_ENB, Motor_Speed_mapped_B);
+
+  } else if (Motor_Direction == "B") {
+    // Set motors to move backward
+    digitalWrite(MotorA_IN1, HIGH);
+    digitalWrite(MotorA_IN2, LOW);
+    digitalWrite(MotorB_IN3, HIGH);
+    digitalWrite(MotorB_IN4, LOW);
+
+    // Check distance_B and adjust speed accordingly
+    if (Distance_B < 35) {
+      // Stop if too close
+      digitalWrite(MotorA_IN1, LOW);
+      digitalWrite(MotorA_IN2, LOW);
+      digitalWrite(MotorB_IN3, LOW);
+      digitalWrite(MotorB_IN4, LOW);
+    } else if (Distance_B >= 35 && Distance_B <= 65) {
+      // Reduce speed in caution zone
+      Motor_Speed_mapped = map(50, 0, 100, 120, 255);
+      Motor_Speed_mapped_B = map(50, 0, 100, 120, 235);
+    } else if (Distance_B > 65) {
+      // Use normal speed mapping
+      Motor_Speed_mapped = map(speed, 0, 100, 120, 255);
+      Motor_Speed_mapped_B = map(speed, 0, 100, 120, 235);
+    }
+
+    analogWrite(MotorA_ENA, Motor_Speed_mapped);
+    analogWrite(MotorB_ENB, Motor_Speed_mapped_B);
+  }
+
+  else if (Motor_Direction == "R") {
+    // Right turn
+    digitalWrite(MotorA_IN1, HIGH);
+    digitalWrite(MotorA_IN2, LOW);
+    digitalWrite(MotorB_IN3, LOW);
+    digitalWrite(MotorB_IN4, HIGH);
+
+    Motor_Speed_mapped = map(100, 0, 100, 120, 255);
+
+    analogWrite(MotorA_ENA, Motor_Speed_mapped);
+    analogWrite(MotorB_ENB, Motor_Speed_mapped);
+
+  } else if (Motor_Direction == "L") {
+    // Left turn
+    digitalWrite(MotorA_IN1, LOW);
+    digitalWrite(MotorA_IN2, HIGH);
+    digitalWrite(MotorB_IN3, HIGH);
+    digitalWrite(MotorB_IN4, LOW);
+
+    Motor_Speed_mapped = map(100, 0, 100, 120, 255);
+
+    analogWrite(MotorA_ENA, Motor_Speed_mapped);
+    analogWrite(MotorB_ENB, Motor_Speed_mapped);
+  }
+}
+
+// ================================================================ Object Detection Functions =================================================================================
+
+void Object_Detect_A(void) {
+  // Take multiple readings and sum them
+  for (int i = 0; i < numReadings_A; i++) {
+    // Trigger the ultrasonic sensor
+    digitalWrite(trigPin_A, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin_A, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin_A, LOW);
+
+    // Measure duration of the echo
+    duration_A = pulseIn(echoPin_A, HIGH);  // Time in microseconds
+    distance_A = (duration_A * Speed) / 2;  // Calculate distance in cm
+
+    // Accumulate distance
+    totalDistance_A += distance_A;
+  }
+
+  // Calculate the average distance
+  Distance_A = totalDistance_A / numReadings_A;
+  totalDistance_A = 0;
+}
+
+void Object_Detect_B(void) {
+  // Take multiple readings and sum them
+  for (int i = 0; i < numReadings_B; i++) {
+    // Trigger the ultrasonic sensor
+    digitalWrite(trigPin_B, LOW);
+    delayMicroseconds(2);
+    digitalWrite(trigPin_B, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(trigPin_B, LOW);
+
+    // Measure duration of the echo
+    duration_B = pulseIn(echoPin_B, HIGH);  // Time in microseconds
+    distance_B = (duration_B * Speed) / 2;  // Calculate distance in cm
+
+    // Accumulate distance
+    totalDistance_B += distance_B;
+  }
+
+  // Calculate the average distance
+  Distance_B = totalDistance_B / numReadings_B;
+  totalDistance_B = 0;
+}
+
+// ================================================================ Motor Current Functions =================================================================================
+
+void Motor_Current_A(void) {
+  // Take multiple samples
+  for (int i = 0; i < numSamples_Motor_A; i++) {
+    adcValues_Motor_A[i] = analogRead(ADC_Pin_Motor_A);  // Read ADC
+    totalAdcValue_Motor_A += adcValues_Motor_A[i];
+  }
+
+  // Calculate average ADC value
+  averageAdcValue_Motor_A = totalAdcValue_Motor_A / (float)numSamples_Motor_A;
+
+  // Convert average ADC value to millivolts
+  averageVoltage_Motor_A = (averageAdcValue_Motor_A * (3.3 / 4095.0)) * 1000;
+
+  Serial.print("Measured Voltage A: ");
+  Serial.print(averageVoltage_Motor_A);
+
+  Serial.print(",  Actual Voltage A: ");
+
+  if (averageAdcValue_Motor_A == 0) {  // Negate calibration offset when ADC is 0
+    averageVoltage_Motor_A = 0;
+  }
+
+  current_A = int((averageVoltage_Motor_A / 3.0));  // Calculate current
+  Serial.print(", Current A: ");
+  Serial.println(current_A);
+
+  totalAdcValue_Motor_A = 0;  // Reset accumulator
+}
+
+void Motor_Current_B(void) {
+  // Take multiple samples
+  for (int i = 0; i < numSamples_Motor_B; i++) {
+    adcValues_Motor_B[i] = analogRead(ADC_Pin_Motor_B);  // Read ADC
+    totalAdcValue_Motor_B += adcValues_Motor_B[i];
+  }
+
+  // Calculate average ADC value
+  averageAdcValue_Motor_B = totalAdcValue_Motor_B / (float)numSamples_Motor_B;
+
+  // Convert average ADC value to millivolts
+  averageVoltage_Motor_B = (averageAdcValue_Motor_B * (3.3 / 4095.0)) * 1000;
+
+  Serial.print("Measured Voltage B: ");
+  Serial.print(averageVoltage_Motor_B);
+
+  Serial.print(",  Actual Voltage B: ");
+
+  if (averageAdcValue_Motor_B == 0) {  // Negate calibration offset when ADC is 0
+    averageVoltage_Motor_B = 0;
+  }
+
+  current_B = int((averageVoltage_Motor_B / 3.0));  // Calculate current
+  Serial.print(", Current B: ");
+  Serial.println(current_B);
+
+  totalAdcValue_Motor_B = 0;  // Reset accumulator
+}
+
+// ================================================================ Battery Level Functions =================================================================================
+
+void updateBatteryLevel() {
+  unsigned long currentTime = millis();
+
+  if (currentTime - lastSampleTime >= SAMPLE_INTERVAL) {
+    lastSampleTime = currentTime;
+
+    int newSample = analogRead(ADC_PIN_Battery);
+    adcBuffer.push(newSample);
+
+    calculateBatteryLevel();
+  }
+}
+
+void calculateBatteryLevel() {
+  if (adcBuffer.isFull()) {
+    totalAdcValue_Battery = 0;  // Reset accumulator
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+      totalAdcValue_Battery += adcBuffer[i];
+    }
+
+    averageAdcValue_Battery = totalAdcValue_Battery / BUFFER_SIZE;
+
+    // Convert ADC value to voltage (account for divider)
+    V_Measured_Battery = averageAdcValue_Battery * (3.3 / 4095.0) * ((R1 + R2) / R2);
+
+    if (V_Measured_Battery <= 5.5845401475666972) {  // Lower clamp
+      Battery_Percentage = 0;
+    } else if (V_Measured_Battery >= 8.307978911905941) {  // Upper clamp
+      Battery_Percentage = 100;
+    } else {
+      for (int i = 0; i < 88; i += 2) {  // Voltage entries are every 2nd element
+        if (V_Measured_Battery <= Discharge_Curve[i]) {
+          // Linear interpolation between two points
+          float lower_soc = Discharge_Curve[i - 1];
+          float upper_soc = Discharge_Curve[i + 1];
+          float lower_voltage = Discharge_Curve[i - 2];
+          float upper_voltage = Discharge_Curve[i];
+
+          float soc_slope = (upper_soc - lower_soc) / (upper_voltage - lower_voltage);
+          SoC = int(2580 - lower_soc + soc_slope * (V_Measured_Battery - lower_voltage));  // Energy left
+
+          Battery_Percentage = int((SoC / 2580) * 100);
+
+          Serial.print("Battery Percentage: ");
+          Serial.println(Battery_Percentage);
+
+          break;
+        }
+      }
+    }
+  }
+}
