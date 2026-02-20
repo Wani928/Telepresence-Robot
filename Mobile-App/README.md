@@ -1,1 +1,1 @@
-Hi
+The Apps were made using MIT App Inventor and the folder provides the .aia that you can open on MIT App Inventor website and edit it as you like. This folder also provides the apk files for both the robot and user app.  
