@@ -6,7 +6,7 @@ Built for less than $350 using cost-effective components and a fully integrated 
 
 ---
 
-## 🔎 Overview
+## Overview
 
 This system enables real-time remote navigation and audiovisual interaction through four integrated subsystems:
 
@@ -17,7 +17,7 @@ This system enables real-time remote navigation and audiovisual interaction thro
 
 ---
 
-## 🤖 Robot Subsystem
+## Robot Subsystem
 
 - ESP32 (WiFi + Bluetooth)
 - L298N motor driver
@@ -35,7 +35,7 @@ Features:
 
 ---
 
-## 🎮 Control Input (Chin Joystick)
+## Control Input (Chin Joystick)
 
 Custom-designed input device tailored for users with limited limb mobility.
 
@@ -47,7 +47,7 @@ Custom-designed input device tailored for users with limited limb mobility.
 
 ---
 
-## 📱 Mobile Applications
+## Mobile Applications
 
 Developed using MIT App Inventor.
 
@@ -64,7 +64,7 @@ Source `.aia` and compiled `.apk` files included.
 
 ---
 
-## 🌐 Communication Architecture
+## Communication Architecture
 
 Hybrid low-latency design:
 
