@@ -1,0 +1,226 @@
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
+
+const char* ssid = "Wanangwa";
+const char* password = "17381234";
+
+const char* udpAddress = "192.168.137.150";
+const char* PhoneAddress = "10.66.176.1"; 
+WiFiUDP udp;
+unsigned int udpPort = 1234;
+int packetSize = 0;
+int len = 0;
+char incomingPacket[255];
+int Distance_A = 0;
+int Distance_B = 0;
+String receivedData = "";
+
+IPAddress staticIP(192, 168, 137, 100);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(192, 168, 1, 1);
+IPAddress secondaryDNS(0, 0, 0, 0);
+
+// Joystick pins and variables
+int X_pin = 36;
+int Y_pin = 39;
+int Switch = 32;
+
+int x_value = 0;
+int y_value = 0;
+int switch_state = 0;
+
+int speed_forward = 0;
+int speed_backward = 0;
+int speed_right = 0;
+int speed_left = 0;
+int speed_send = 0;
+
+String Joystick_Movement = "";
+
+String prev_Joystick_Movement = "";
+int prev_speed_send = 0;
+int prev_switch_state = 0;
+
+// BLE variables
+BLEServer *pServer = NULL;
+BLECharacteristic *pCharacteristic = NULL;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+#define SERVICE_UUID        "24333d6b-a102-4ca7-8ac8-7625b9df245e"
+#define CHARACTERISTIC_UUID "f773190b-0771-45a3-93fd-1aabe9367fe1"
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) {
+    deviceConnected = true;
+  };
+
+  void onDisconnect(BLEServer *pServer) {
+    deviceConnected = false;
+  }
+};
+
+void setup() {
+  Serial.begin(115200);
+  
+  // WiFi setup
+  WiFi.begin(ssid, password);
+  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
+    Serial.println("Connection Failed! Rebooting...");
+    delay(5000);
+    ESP.restart();
+  }
+
+  if(!WiFi.config(staticIP, gateway, subnet, primaryDNS, secondaryDNS)) {
+    Serial.println("Failed to configure Static IP");
+  } else {
+    Serial.println("Static IP configured!");
+  }
+  
+  Serial.println(WiFi.localIP());
+  Serial.println("Status: Connected");
+
+  udp.begin(udpPort);
+  Serial.println(udpPort);
+
+  // Joystick setup
+  pinMode(X_pin, INPUT);
+  pinMode(Y_pin, INPUT);
+  pinMode(Switch, INPUT_PULLUP);
+
+  // BLE setup
+  BLEDevice::init("ESP32");
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+  pCharacteristic = pService->createCharacteristic(
+    CHARACTERISTIC_UUID,
+    BLECharacteristic::PROPERTY_READ |
+    BLECharacteristic::PROPERTY_WRITE |
+    BLECharacteristic::PROPERTY_NOTIFY |
+    BLECharacteristic::PROPERTY_INDICATE
+  );
+
+  pCharacteristic->addDescriptor(new BLE2902());
+
+  pService->start();
+  BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setScanResponse(false);
+  pAdvertising->setMinPreferred(0x0);
+  BLEDevice::startAdvertising();
+  Serial.println("Waiting for a client connection to notify...");
+}
+
+void Joystick() {
+  x_value = analogRead(X_pin);
+  y_value = analogRead(Y_pin);
+  switch_state = digitalRead(Switch);
+
+  speed_forward = map(x_value, 1730, 0, 0, 100);
+  speed_backward = map(x_value, 1930, 4095, 0, 100);
+  speed_right = map(y_value, 1830, 0, 0, 100);
+  speed_left = map(y_value, 2030, 4095, 0, 100);
+
+  if (x_value < 1730) {
+    Joystick_Movement = "F";
+    speed_send = speed_forward;
+  }
+  else if (x_value > 1930) {
+    Joystick_Movement = "B";
+    speed_send = speed_backward;
+  }
+  else if (y_value < 1830) {
+    Joystick_Movement = "R";
+    speed_send = speed_right;
+  }
+  else if (y_value > 2030) {
+    Joystick_Movement = "L";
+    speed_send = speed_left;
+  }
+  else if ((x_value > 1730 && x_value < 1930) && (y_value > 1830 && y_value < 2030)) {
+    Joystick_Movement = "S";
+    speed_send = 0;
+  }
+}
+
+void sendUDPData() {
+  String data_to_send = Joystick_Movement + String(speed_send) + "," + String(switch_state);
+  
+  udp.beginPacket(udpAddress, udpPort);
+  udp.write((const uint8_t*)data_to_send.c_str(), data_to_send.length());
+  udp.endPacket();
+
+  udp.beginPacket(PhoneAddress, udpPort);
+  udp.write((const uint8_t*)data_to_send.c_str(), data_to_send.length());
+  udp.endPacket();
+
+  Serial.print("Sent via UDP: ");
+  Serial.println(data_to_send);
+}
+
+void receiveUDPData() {
+  packetSize = udp.parsePacket();
+  if (packetSize) {
+    len = udp.read(incomingPacket, 255);
+    if (len > 0) {
+      incomingPacket[len] = 0;
+    }
+    
+    Serial.printf("Received %d bytes from %s, port %d\n", packetSize, udp.remoteIP().toString().c_str(), udp.remotePort());
+    
+    receivedData = String(incomingPacket);
+    Distance_A = receivedData.substring(0, receivedData.indexOf(',')).toInt();
+    Distance_B = receivedData.substring(receivedData.indexOf(',') + 1).toInt();
+
+    Serial.print("Distance A: ");
+    Serial.println(Distance_A);
+    Serial.print("Distance B: ");
+    Serial.println(Distance_B);
+  }
+}
+
+void loop() {
+  Joystick();
+  
+  // Send Joystick data via UDP
+  if (Joystick_Movement != prev_Joystick_Movement ||
+      speed_send != prev_speed_send ||
+      switch_state != prev_switch_state) {
+    sendUDPData();
+    
+    prev_Joystick_Movement = Joystick_Movement;
+    prev_speed_send = speed_send;
+    prev_switch_state = switch_state;
+  }
+  
+  // Receive distance data via UDP
+  receiveUDPData();
+
+  // Send combined data via BLE
+  if (deviceConnected) {
+    String dataString = Joystick_Movement + "," + String(speed_send) + "," + String(switch_state) + "," + String(Distance_A) + "," + String(Distance_B);
+    Serial.print("Sending via BLE: ");
+    Serial.println(dataString);
+
+    pCharacteristic->setValue(dataString.c_str());
+    pCharacteristic->notify();
+
+    delay(20);
+  }
+
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);
+    pServer->startAdvertising();
+    Serial.println("Start advertising");
+    oldDeviceConnected = deviceConnected;
+  }
+
+  if (deviceConnected && !oldDeviceConnected) {
+    oldDeviceConnected = deviceConnected;
+  }
+}
